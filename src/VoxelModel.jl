@@ -3,11 +3,12 @@ module VoxelModel
 export reset_voxel, plot_voxel, export_voxel, save_voxel, load_voxel, assign_voxel
 export reset_shift, reset_dl, reset_start, reset_ref
 export create_cuboid, create_cube, create_sphere, create_ellipsoid, create_cylinder
+export voxelize_stl
 export trans!, rot!, export_grid
 export clear_geom
 export colorDict, canvas
 
-using PlotlyJS
+using PlotlySupply
 using PlotlyGeometries
 using LinearAlgebra
 using Combinatorics

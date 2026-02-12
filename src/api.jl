@@ -391,6 +391,71 @@ function create_cylinder(origin::Vector{<:Real}, radius::Real, height::Real, ind
 end
 
 """
+    voxelize_stl(fileName::String, gridN::Union{Int, NTuple{3, Int}}=100, ind::Int=1, raydirection::String="xyz"; render=false)
+
+    Voxelizes a watertight STL mesh and assigns the result to the current voxel space.
+
+    # Arguments
+    - `fileName::String`: path to STL file (ASCII or binary).
+    - `gridN::Union{Int, NTuple{3, Int}}=100`: voxel counts in `(x, y, z)`. If integer, same count is used for all dimensions.
+    - `ind::Int=1`: color/material index for occupied voxels.
+    - `raydirection::String="xyz"`: ray-casting direction(s), any combination of `"x"`, `"y"`, `"z"`.
+
+    # Keywords
+    - `render=false`: real-time rendering for creation/operation.
+
+    # Returns
+    - `Voxels`: copy of the voxelized result.
+"""
+function voxelize_stl(fileName::String, gridN::Union{Int, NTuple{3, Int}}=100, ind::Int=1, raydirection::String="xyz"; render=false)
+    @assert ind >= 0
+    nx, ny, nz = gridN isa Int ? (gridN, gridN, gridN) : gridN
+    @assert nx > 0 && ny > 0 && nz > 0
+
+    tris = _to_triangle_data(_read_stl(fileName))
+    xmin = minimum(getfield.(tris, :minv) .|> x -> x[1])
+    ymin = minimum(getfield.(tris, :minv) .|> x -> x[2])
+    zmin = minimum(getfield.(tris, :minv) .|> x -> x[3])
+    xmax = maximum(getfield.(tris, :maxv) .|> x -> x[1])
+    ymax = maximum(getfield.(tris, :maxv) .|> x -> x[2])
+    zmax = maximum(getfield.(tris, :maxv) .|> x -> x[3])
+
+    xs, dx = _auto_grid_coords(xmin, xmax, nx)
+    ys, dy = _auto_grid_coords(ymin, ymax, ny)
+    zs, dz = _auto_grid_coords(zmin, zmax, nz)
+    dirs = _parse_raydirections(raydirection)
+
+    inside_votes = zeros(UInt8, nx, ny, nz)
+    for ix in 1:nx, iy in 1:ny, iz in 1:nz
+        point = (xs[ix], ys[iy], zs[iz])
+        for d in dirs
+            if _point_inside_direction(point, tris, d)
+                inside_votes[ix, iy, iz] += 1
+            end
+        end
+    end
+
+    threshold = ceil(Int, length(dirs) / 2)
+    grid = zeros(Int, nx, ny, nz)
+    for i in eachindex(grid)
+        if inside_votes[i] >= threshold
+            grid[i] = ind
+        end
+    end
+
+    reset_voxel()
+    voxel.grid = grid
+    voxel.dl = [dx, dy, dz]
+    voxel.start = [xs[1], ys[1], zs[1]]
+    _reset_gridID()
+
+    if render
+        _plot_voxel(gridID, refAxis[])
+    end
+    return export_voxel()
+end
+
+"""
     trans!(geo::Geometry, dl::Vector{<:Real}; render=false)
 
     Translates the geometry by the specified vector `dl`.
@@ -524,4 +589,3 @@ end
 
 
 #endregion
-

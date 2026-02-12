@@ -32,11 +32,24 @@ Please go to the examples folder for quick understanding of how to use the modul
 
 - `ex_assign.jl`: Assign grid array to the voxel space.
 
+- `ex_stl_voxelize.jl`: Voxelize an STL mesh (`examples/sample.stl`) and visualize the result.
+
 
 ## Usage
 
 Please refer to the [user manual](./docs/MANUAL.md) in the docs folder.
 
+### STL Voxelization
+
+`VoxelModel.jl` supports voxelization of watertight ASCII or binary STL files:
+
+```julia
+using VoxelModel
+
+stl_path = joinpath(@__DIR__, "examples", "sample.stl")
+voxelize_stl(stl_path, (100, 100, 100), 1, "xyz")
+plot_voxel(true)
+```
 
 
 

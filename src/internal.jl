@@ -290,4 +290,182 @@ function _round(num::Number)
         return round(num)
     end
 end
+
+struct _TriangleData
+    v0::NTuple{3, Float64}
+    e1::NTuple{3, Float64}
+    e2::NTuple{3, Float64}
+    minv::NTuple{3, Float64}
+    maxv::NTuple{3, Float64}
+end
+
+_sub3(a::NTuple{3, Float64}, b::NTuple{3, Float64}) = (a[1] - b[1], a[2] - b[2], a[3] - b[3])
+_dot3(a::NTuple{3, Float64}, b::NTuple{3, Float64}) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+_cross3(a::NTuple{3, Float64}, b::NTuple{3, Float64}) = (a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3], a[1] * b[2] - a[2] * b[1])
+
+function _auto_grid_coords(vmin::Float64, vmax::Float64, n::Int)
+    @assert n > 0
+    if n == 1
+        return [(vmin + vmax) / 2], 1.0
+    end
+    step = (vmax - vmin) / (n + 0.5)
+    vals = collect(range(vmin + step / 2, vmax - step / 2, length=n))
+    return vals, step
+end
+
+function _to_triangle_data(tris::Vector{NTuple{3, NTuple{3, Float64}}})
+    data = Vector{_TriangleData}(undef, length(tris))
+    for i in eachindex(tris)
+        v0 = tris[i][1]
+        v1 = tris[i][2]
+        v2 = tris[i][3]
+        e1 = _sub3(v1, v0)
+        e2 = _sub3(v2, v0)
+        minv = (min(v0[1], v1[1], v2[1]), min(v0[2], v1[2], v2[2]), min(v0[3], v1[3], v2[3]))
+        maxv = (max(v0[1], v1[1], v2[1]), max(v0[2], v1[2], v2[2]), max(v0[3], v1[3], v2[3]))
+        data[i] = _TriangleData(v0, e1, e2, minv, maxv)
+    end
+    return data
+end
+
+function _unique_count_sorted!(vals::Vector{Float64}, atol::Float64)
+    isempty(vals) && return 0
+    sort!(vals)
+    count = 1
+    prev = vals[1]
+    for i in 2:length(vals)
+        if abs(vals[i] - prev) > atol
+            count += 1
+            prev = vals[i]
+        end
+    end
+    return count
+end
+
+function _ray_triangle_t(origin::NTuple{3, Float64}, dir::NTuple{3, Float64}, tri::_TriangleData, eps::Float64)
+    pvec = _cross3(dir, tri.e2)
+    det = _dot3(tri.e1, pvec)
+    if abs(det) < eps
+        return NaN
+    end
+    invdet = 1.0 / det
+    tvec = _sub3(origin, tri.v0)
+    u = _dot3(tvec, pvec) * invdet
+    if u < -eps || u > 1 + eps
+        return NaN
+    end
+    qvec = _cross3(tvec, tri.e1)
+    v = _dot3(dir, qvec) * invdet
+    if v < -eps || u + v > 1 + eps
+        return NaN
+    end
+    t = _dot3(tri.e2, qvec) * invdet
+    return t > eps ? t : NaN
+end
+
+function _point_inside_direction(point::NTuple{3, Float64}, tris::Vector{_TriangleData}, dirsym::Char; eps::Float64=1e-9)
+    dir = dirsym == 'x' ? (1.0, 0.0, 0.0) : dirsym == 'y' ? (0.0, 1.0, 0.0) : (0.0, 0.0, 1.0)
+    ts = Float64[]
+    sizehint!(ts, min(64, length(tris)))
+
+    for tri in tris
+        if dirsym == 'x'
+            if point[2] < tri.minv[2] - eps || point[2] > tri.maxv[2] + eps || point[3] < tri.minv[3] - eps || point[3] > tri.maxv[3] + eps
+                continue
+            end
+        elseif dirsym == 'y'
+            if point[1] < tri.minv[1] - eps || point[1] > tri.maxv[1] + eps || point[3] < tri.minv[3] - eps || point[3] > tri.maxv[3] + eps
+                continue
+            end
+        else
+            if point[1] < tri.minv[1] - eps || point[1] > tri.maxv[1] + eps || point[2] < tri.minv[2] - eps || point[2] > tri.maxv[2] + eps
+                continue
+            end
+        end
+
+        t = _ray_triangle_t(point, dir, tri, eps)
+        if isfinite(t)
+            push!(ts, t)
+        end
+    end
+    isodd(_unique_count_sorted!(ts, 1e-7))
+end
+
+function _parse_raydirections(raydirection::AbstractString)
+    dirs = unique(collect(lowercase(raydirection)))
+    filter!(d -> d in ('x', 'y', 'z'), dirs)
+    @assert !isempty(dirs) "raydirection must include x, y, and/or z"
+    return dirs
+end
+
+function _stl_format(fileName::AbstractString)
+    sz = filesize(fileName)
+    open(fileName, "r") do io
+        head = read(io, min(80, sz))
+        headtxt = lowercase(strip(String(Char.(head))))
+        starts_solid = startswith(headtxt, "solid")
+        binary_sized = sz >= 84 && (sz - 84) % 50 == 0
+        if binary_sized && !starts_solid
+            return :binary
+        end
+        if starts_solid
+            seek(io, max(0, sz - 256))
+            tail = read(io, min(256, sz))
+            tailtxt = lowercase(String(Char.(tail)))
+            return occursin("endsolid", tailtxt) ? :ascii : :binary
+        end
+        return binary_sized ? :binary : :ascii
+    end
+end
+
+function _read_stl_ascii(fileName::AbstractString)
+    triangles = NTuple{3, NTuple{3, Float64}}[]
+    verts = NTuple{3, Float64}[]
+    open(fileName, "r") do io
+        for line in eachline(io)
+            s = strip(line)
+            if startswith(lowercase(s), "vertex")
+                parts = split(s)
+                if length(parts) >= 4
+                    x = parse(Float64, parts[2])
+                    y = parse(Float64, parts[3])
+                    z = parse(Float64, parts[4])
+                    push!(verts, (x, y, z))
+                    if length(verts) == 3
+                        push!(triangles, (verts[1], verts[2], verts[3]))
+                        empty!(verts)
+                    end
+                end
+            end
+        end
+    end
+    return triangles
+end
+
+function _read_stl_binary(fileName::AbstractString)
+    triangles = NTuple{3, NTuple{3, Float64}}[]
+    open(fileName, "r") do io
+        read(io, 80)
+        nfacet = Int(read(io, UInt32))
+        sizehint!(triangles, nfacet)
+        for _ in 1:nfacet
+            read(io, Float32)  # normal x
+            read(io, Float32)  # normal y
+            read(io, Float32)  # normal z
+            v1 = (Float64(read(io, Float32)), Float64(read(io, Float32)), Float64(read(io, Float32)))
+            v2 = (Float64(read(io, Float32)), Float64(read(io, Float32)), Float64(read(io, Float32)))
+            v3 = (Float64(read(io, Float32)), Float64(read(io, Float32)), Float64(read(io, Float32)))
+            read(io, UInt16)  # attribute byte count
+            push!(triangles, (v1, v2, v3))
+        end
+    end
+    return triangles
+end
+
+function _read_stl(fileName::AbstractString)
+    fmt = _stl_format(fileName)
+    tris = fmt == :binary ? _read_stl_binary(fileName) : _read_stl_ascii(fileName)
+    @assert !isempty(tris) "No triangles found in STL file: $fileName"
+    return tris
+end
 #endregion
