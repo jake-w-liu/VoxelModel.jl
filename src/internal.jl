@@ -91,7 +91,7 @@ function _plot_voxel(gridID::Array{Vector}, addRef::Bool=true)
     end
 end
 
-function _add_geom(geo::Geometry, gridID::Array{Vector})
+function _add_geom(geo::Geometry, _::Array{Vector})
     dx = voxel.dl[1]
     dy = voxel.dl[2]
     dz = voxel.dl[3]
